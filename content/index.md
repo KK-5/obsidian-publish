@@ -1,16 +1,8 @@
 ---
-title: Welcome to Quartz
+title: kaikai的学习笔记
 tags:
   - 测试
 ---
-
-
-不识别换行吗 
-？？？
-离谱 
-哈哈
-
-This is a blank Quartz installation.
-See the [documentation](https://quartz.jzhao.xyz) for how to get started.
+网站测试。
 
 
