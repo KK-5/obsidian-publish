@@ -1,6 +1,6 @@
 顾名思义，这个类用于执行worker上需要执行的各种命令，是worker中最核心的功能。先看它的定义：
 
-```
+```go
 type CommandExecutor struct {
 	cli         CommandLineRunner
 	listener    CommandListener
@@ -12,22 +12,17 @@ type CommandExecutor struct {
 ```
 
 CommandExecutor中有四个变量：
-
 cli：用于在本计算机上执行cli命令。
-
 listener：用于将命令执行的结果和日志上传至manager，以便于查看任务的执行情况。
-
 timeService：时间服务。
-
 registry：保存每种任务和它们需要执行的函数的映射，比如blender-render类型的任务就需要执行计算机上的blender程序。commandCallable的定义为：
-
-```
+```go
 type commandCallable func(ctx context.Context, logger zerolog.Logger, taskID string, cmd api.Command) error
 ```
 
 初始化：
 
-```
+```go
 func NewCommandExecutor(cli CommandLineRunner, listener CommandListener, timeService TimeService) *CommandExecutor {
 	ce := &CommandExecutor{
 		cli:         cli,
@@ -57,7 +52,7 @@ func NewCommandExecutor(cli CommandLineRunner, listener CommandListener, timeSer
 CommandExecutor的初始化参数就是前3个成员变量，将成员变量都赋值后，再将registry初始化，可以看到每种类型的任务都有它们对应的commandCallable，比如echo对应ce.cmdEcho，这就是worker支持的所有任务类型。
 
 ## CommandLineRunner成员
-```
+```go
 // CommandLineRunner is an interface around exec.CommandContext().
 //
 //go:generate go run github.com/golang/mock/mockgen -destination mocks/cli_runner.gen.go -package mocks projects.blender.org/studio/flamenco/internal/worker CommandLineRunner
@@ -76,19 +71,19 @@ type CommandLineRunner interface {
 注释已经描述了，CommandLineRunner是一个包裹exec.CommandContext的接口，exec.CommandContext就是Go语言中执行CMD命令的工具。这个接口有两个函数，CommandContext用来获取exec.Cmd，RunWithTextOutput用来执行CMD命令。
 ### CLIRunner
 实现CommandLineRunner这个接口的类叫做CLIRunner，CLIRunner中没有任何成员变量，单纯地实现了接口中的两个函数。
-```
+```go
 type CLIRunner struct {
 }
 ```
 ### CommandContext函数
-```
+```go
 func (cli *CLIRunner) CommandContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, name, arg...)
 }
 ```
 非常简单，创建并返回一个exec.Cmd指针。
 ### RunWithTextOutput函数
-```
+```go
 // RunWithTextOutput runs a command and sends its output line-by-line to the
 // lineChannel. Stdout and stderr are combined.
 // Before returning. RunWithTextOutput() waits for the subprocess, to ensure it
@@ -121,7 +116,7 @@ func (cli *CLIRunner) RunWithTextOutput(
 ```
 这里只看它的核心代码部分，除了记录Cmd执行的日志以外，他唯一的功能就是execCmd.Start()开始执行Cmd命令。
 ## CommandListener成员
-```
+```go
 // CommandListener sends the result of commands (log, output files) to the Manager.
 type CommandListener interface {
     // LogProduced sends any logging to whatever service for storing logging.
@@ -136,7 +131,7 @@ LogProduced：用于上传日志到manager。
 OutputProduced：用于上传任务输出（一般是渲染图片）到manager。
 ### Listener
 Listener是实现CommandListener接口的类。它的定义如下：
-```
+```go
 // Listener listens to the result of task and command execution, and sends it to the Manager.
 type Listener struct {
 	client         FlamencoClient
@@ -155,7 +150,7 @@ func NewListener(client FlamencoClient, buffer UpstreamBuffer) *Listener {
 ```
 其中有3个成员变量，client用于与manager通信，buffer用来保存需要上传的信息，outputUploader实现上传操作，在它的初始化中，outputUploader也是需要client来进行初始化的，outputUploader就是Listener的核心。
 #### LogProduced
-```
+```go
 func (l *Listener) sendTaskUpdate(ctx context.Context, taskID string, update api.TaskUpdateJSONRequestBody) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -174,7 +169,7 @@ func (l *Listener) LogProduced(ctx context.Context, taskID string, logLines ...s
 LogProduced将最新的日志按行送到manager，其中调用了buffer.SendTaskUpdate方法，这是UpstreamBuffer中的一个方法。
 日志传输的流程暂略。
 #### OutputProduced
-```
+```go
 // OutputProduced tells the Manager there has been some output (most commonly a rendered frame or video).
 func (l *Listener) OutputProduced(ctx context.Context, taskID string, outputLocation string) error {
 	l.outputUploader.OutputProduced(taskID, outputLocation)
@@ -185,7 +180,7 @@ func (l *Listener) OutputProduced(ctx context.Context, taskID string, outputLoca
 
 ##### OutputUploader
 这是执行真正文件传输操作的类，
-```
+```go
 // OutputUploader sends (downscaled versions of) rendered images to Flamenco
 // Manager. Only one image is sent at a time. A queue of a single image is kept,
 // where newly queued images replace older ones.
@@ -208,7 +203,7 @@ func NewOutputUploader(client FlamencoClient) *OutputUploader {
 ```
 可以看到，其中有一个FlamencoClient和一个queue，queue中保存了每一个任务的信息，信息由TaskID和Filename组成。
 OutputUploader中的OutputProduced函数如下：
-```
+```go
 // OutputProduced enqueues the given filename for processing.
 func (ou *OutputUploader) OutputProduced(taskID, filename string) {
     // TODO: Before enqueueing (and thus overwriting any previously queued item),
@@ -221,7 +216,7 @@ func (ou *OutputUploader) OutputProduced(taskID, filename string) {
 ```
 它并未做任务传输操作，而是将需要传输的文件加入队列。
 OutputUploader中还有一个Run函数，它是这样的：
-```
+```go
 func (ou *OutputUploader) Run(ctx context.Context) {
     log.Info().Msg("output uploader: running")
     defer log.Info().Msg("output uploader: shutting down")
@@ -248,7 +243,7 @@ runLoop:
 ```
 由此可以看出，worker的文件传输是异步的，它只要将需要传输的任务加入队列中，另一个goroutine会调用process函数来对每个任务进行处理，
 process函数：
-```
+```go
 // process loads the given image, converts it to JPEG, and uploads it to
 // Flamenco Manager.
 func (ou *OutputUploader) process(ctx context.Context, item TaskOutput) {
@@ -272,7 +267,7 @@ func (ou *OutputUploader) process(ctx context.Context, item TaskOutput) {
 将需要上传的图片解析为JPEG格式，然后上传到manager。
 ## CommandExecutor的其他成员函数
 ### Run
-```
+```go
 func (ce *CommandExecutor) Run(ctx context.Context, taskID string, cmd api.Command) error {
     logger := log.With().Str("task", string(taskID)).Str("command", cmd.Name).Logger()
     logger.Info().Interface("parameters", cmd.Parameters).Msg("running Flamenco command")
