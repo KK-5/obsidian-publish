@@ -130,7 +130,8 @@ ccl_device_forceinline bool film_need_sample_pixel(KernelGlobals kg,
 
 ## film_write_sample
 
-对采样进行计数并获取该像素的有效样本，也可以向该像素添加样本，
+对采样进行计数并获取该像素的有效样本，也可以想该像素添加样本，
+
 源码位于src\kernel\film\light_passes.h
 
 ```
@@ -157,6 +158,7 @@ ccl_device_inline int film_write_sample(KernelGlobals kg,
 ```
 
 传入的sample参数是理论采样计数，返回实际的采样计数。
+
 这个阶段也属于自适应采样算法，暂时不深入研究。
 
 ## path_rng_hash_init
