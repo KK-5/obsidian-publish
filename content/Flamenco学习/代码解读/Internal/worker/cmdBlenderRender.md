@@ -19,7 +19,6 @@
 在这里可以看到blender-render对应的执行命令的函数就是cmdBlenderRender。
 
 cmdBlenderRender函数代码：
-
 ```
 // cmdBlender executes the "blender-render" command.
 func (ce *CommandExecutor) cmdBlenderRender(ctx context.Context, logger zerolog.Logger, taskID string, cmd api.Command) error {

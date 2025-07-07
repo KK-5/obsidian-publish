@@ -1,5 +1,4 @@
 flamenco中的任务有不同的状态，使用状态机对task和job的状态进行管理，在pkg模块下的openapi_types.gen.go文件中有定义二者状态：
-
 ```
 // Defines values for JobStatus.
 const (
@@ -43,12 +42,10 @@ const (
 这些状态的定义比较直观。因为一个job可能含有多个task，所以每个job的状态要取决于它所包含的所有task的状态。
 
 ### 状态机涉及的前置功能
-
 flamenco中对状态机的管理涉及以下几个功能：
 
 1. 持久化
     
-
 ```
 type PersistenceService interface {
 	SaveTask(ctx context.Context, task *persistence.Task) error
@@ -145,11 +142,9 @@ func (sm *StateMachine) TaskStatusChange(
 	return nil
 }
 ```
-
 输入context，task，和newTaskStatus，将task状态置为newTaskStatus，其中包含了两个步骤，一个是task本身的状态变化，一个是这个task状态变化后引起包含了它的job的状态变化。
 
 taskStatusChangeOnly函数：
-
 ```
 // taskStatusChangeOnly updates the task's status to the new one, but does not "ripple" the change to the job.
 // `task` is expected to still have its original status, and have a filled `Job` pointer.
@@ -181,7 +176,6 @@ func (sm *StateMachine) taskStatusChangeOnly(
 2. 广播发出一个TaskUpdate事件，主要用于web界面的更新。
 
 updateJobAfterTaskStatusChange函数：
-
 ```
 // updateJobAfterTaskStatusChange updates the job status based on the status of
 // this task and other tasks in the job.
