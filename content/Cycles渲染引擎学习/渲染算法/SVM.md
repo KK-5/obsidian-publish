@@ -176,7 +176,7 @@ typedef enum ClosureType {
   ...
 }
 ```
-并不是每一个Shader节点都对于一个ClosureType，为了便于使用，一个Shader节点可以包含多个ClosureType切换，比如下面这个Toon BSDF节点，可以需要切换成Diffuse或Glossy模式，分别对应CLOSURE_BSDF_DIFFUSE_TOON_ID和CLOSURE_BSDF_GLOSSY_TOON_ID这两个ClosureType。
+并不是每一个Shader节点都对于一个ClosureType，为了便于使用，一个Shader节点可以包含多个ClosureType，比如下面这个Toon BSDF节点，可以需要切换成Diffuse或Glossy模式，分别对应CLOSURE_BSDF_DIFFUSE_TOON_ID和CLOSURE_BSDF_GLOSSY_TOON_ID这两个ClosureType。
 ![[Pasted image 20240725160731.png]]
 在一个Shader Graph中可以包含多个闭包，它们以不同的权重混合，比如下面这个Shader Graph包含了两个闭包，
 ![[Pasted image 20240725160832.png]]

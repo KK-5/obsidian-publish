@@ -411,11 +411,71 @@ $$
 最终剩下散射的能量，包括次表面散射部分和漫反射部分。
 按照这个思路，specular BSDF将与diffuse + subsurface部分根据specTrans参数进行融合。
 关于specular BSDF的计算方法，在[[常用的反射模型#粗糙的绝缘体]]中有推导，同样使用了微平面的理论。
-specular BSDF只会在离线渲染中使用，第一，其计算方法太复杂，第二，只有在光线追踪算法中，才可以模拟光线透过物体时的渲染效果，在实时渲染中通常只使用alpha来实现半透明效果，要想实现更丰富的透射效果（如光线折射，磨砂玻璃），需要使用其他的技术手段模拟。
+specular BSD通常F只会在离线渲染中使用，第一，其计算方法太复杂，第二，只有在光线追踪算法中，才可以模拟光线透过物体时的渲染效果，在实时渲染中通常只使用alpha来实现半透明效果，要想实现更丰富的透射效果（如光线折射，磨砂玻璃），需要使用其他的技术手段模拟。
 ## subsurface
+之前BRDF使用的subsurface模型过于简单，disney在BSDF的扩充中对subsurface的计算进行了更加详细的分析。
+首先，在之前的模型中，漫反射被分成了两个部分，diffuse和subsurface，这是一个理想光滑表面的反射方式，
+![[Pasted image 20250826185254.png]]
+在粗糙的微平面下，漫反射应该是这样的，
+![[Pasted image 20250826185711.png]]
 
-
-
+光线照射到粗糙物体之上后，在表面先形成retro-reflection和sheen两种反射，然后进入物体内部，在其中不断弹射形成subsurface，弹射出的光线形成diffuse。
+这样就可以用更加精细的模型描述漫反射现象了，在BSDF中，diffuse项做了以下修改，
+$$
+\begin{aligned}
+f_d=\frac{R}{\pi}(1-0.5F_L)(1-0.5F_V)+f_{retro-reflection} \\
+f_{retro-reflection}=\frac{R}{\pi}R_R(F_L+F_V+F_LF_V(R_R-1))
+\end{aligned}
+$$
+其中
+$$
+F_L=(1-\cos\theta_l)^5,\space F_V=(1-\cos\theta_v)^5, \space R_R=2*roughness*\cos^2\theta_d
+$$
+增加了retro-reflection的部分，sheen部分依然使用之前的计算方式。
+次表面散射部分不再使用Hanrahan-Krueger brdf的近似，而是使用物理正确的BSSRDF近似，
+与BRDF不同，BSSRDF公式更加复杂，
+$$
+S(x_i,\omega_i,x_o,\omega_o)=CF_t(x_i,\omega_i)R(|x_o-x_i|)F_t(x_o,\omega_o)
+$$
+与$f_r(p,\omega_i,\omega_o)$相比，BSSRDF多了一个参数，这是因为散射时入射点和出射点的位置不一样。
+C为漫反射率R（baseColor）。
+Ft表示光线入射和出射时的折射系数，表示折射的光线能量大小。
+R被称为扩散曲线（Diffusion Profile），它表示一束光垂直照射到材质表面一个无限小的点上，在距离该点**径向距离为 `r`（$|x_o-x_i|$）** 的另一个点处，光出射的**相对概率分布**。简单来理解光从入射点进入后，最有可能在多远的地方穿出来。所以当计算一个点的光照结果时，可以使用这个函数统计出周围哪些点可能对这个点也有光照贡献（光线从那些点进入，在当前点射出）。
+disney bsdf使用的Diffusion Profile公式为
+$$
+R_d(r)=\frac{e^{-\frac{r}{d}}+e^{-\frac{r}{3d}}}{8\pi dr}
+$$
+r表示扩散距离，d表示散射距离，通常作为一个参数暴露给美术，它是一个float3类型的值，因为不同的色光在物体中的散射距离是不一样的。
+这个公式的优点是在无限大平面的积分为1，并且pdf和cdf非常容易求出，所以很方便进行采样，
+$$
+\int_0^{2\pi}\int_0^{\infty}R_d(r)rdrd\phi=1
+$$
+如果计算出了$R_d$，结合Ft就可以计算最终的BSSRDF值。
+关于$R_d$的计算，由于它的含义为光线出射点相对于入射点的相对概率分布，计算时可以根据它的分布在物体周围对入射点进行采样（通过重要性采样的方法），再采样出其入射方向（和通常的入射方向采样相同，比如可以使用半球面的$\cos\theta$采样）。出射点和入射点之间的距离带入公式即可计算出$R_d$.
+同时，有了入射和出射方向的信息，也可以结合折射率计算出$F_t(i)$和$F_t(o)$，这样BSSRDF就可以计算出来了。
+与BRDF相比，BSSRDF多了一次对入射点的采样。
+在实时渲染中，通常使用屏幕空间的方法实现次表面散射效果（这种技术叫做屏幕空间次表面散射，简称sssss），同样根据$R_d$函数，在一个屏幕上圆盘之中对入射点进行采样，然后根据距离计算出$R_d$，后面就和光线追踪算法一样了。由于使用的是屏幕空间的采样，精确度相比光线追踪要差一些。
+次表面散射引入了一个新的参数：
+- scatterDistance（散射距离）:float3类型，指光在物体内部平均传输距离，越大次表面散射的效果就越平滑。大多数实现会将此参数拆分成两个参数，一个Color和一个Distance，二者相乘获得scatterDistance。
+## 关于IOR
+bsdf引入的新参数IOR(折射率)对美术来说并不友好，之前是使用specular参数来控制。关于specular与IOR的关系在上面[[#计算brdf颜色分量（反射率R，F0）]]，默认的specular = 0.5对应IOR = 1.5 对应 F0 = 0.04，specular取值范围为0到1，对应IOR范围为1到1.8。
+由于bsdf引入了透射部分，必须保证计算反射和透射时能量时IOR相同的，所以IOR参数不得不使用回来。不过IOR参数和F0近似于线性关系，所以它依然可以做线性的混合。对于大多数材质IOR取值在1到2之间，默认为0.05。
+## Fresnel函数
+在brdf中使用Schlick Fresnel作为Fresnel的近似函数，它计算简单，效果也很好。不过如果考虑到透射部分，其Fresnel项需要更精确的结果，因为F直接决定了反射光、透射光、散射光的能量大小，对bsdf引入的specular Transmission和subsurface都很重要。
+有了IOR之后，可以通过下面方式来计算透射的Fresnel项。
+$$
+\begin{aligned}
+F_0&=(\frac{1-\eta}{1+\eta})^2 \\
+\cos^2\theta_t&=1-\frac{1-\cos^2\theta_i}{\eta^2} \\
+F_{Schlick}(\theta_i,\eta)&=\begin{cases} F0+(1-F0)(1-\cos\theta_t)^5 &&  \cos^2\theta_t > 0 \\ 1 && otherwise\end{cases}
+\end{aligned}
+$$
+当然，有了IOR和折射光的方向之后，最好的方法就是直接使用[[反射模型#菲涅尔方程]]来计算Fresnel项，在[[常用的反射模型]]中就是这样做的。为了提高性能，除了透射之外的其他项依然可以使用Schlick Fresnel近似。
+## 关于薄面
+对于薄面的BSDF，disney新引入了diffTrans，它用来插值diffuse reflection和diffuse transmission项，diffuse reflection依然使用漫反射的计算方式，diffuse transmission可以使用简单的Lambertian来计算。
+同时，薄面的次表面散射效果很弱，依然使用之前brdf的近似来实现，但是为了与subsurface进行区分，使用flatness来插值漫反射项和subsurface项。
+同时，薄面的透射引起的光线方向偏移几乎可以忽略不记，但是会增强模糊效果，所以通过折射率来对粗糙度进行校正，具体方法是$roughness = (0.5 * \eta - 0.35) * roughness$。
 # Reference
 https://zhuanlan.zhihu.com/p/60977923
+https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf
 
