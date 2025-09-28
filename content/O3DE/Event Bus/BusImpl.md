@@ -492,4 +492,341 @@ EBusBroadcaster的升级版，按顺序广播一个事件至所有handler。
             static void QueueFunction(Function&& func, InputArgs&& ... args);
         };
 ```
-这个结构体的功能就是对[[Policies#EBusQueuePolicy]]的应用，它作为一个数据保存在EBus中，其中有一个队列message，里面保存了很多函数，
+这个结构体的功能就是对[[Policies#EBusQueuePolicy]]的应用，它作为一个数据保存在EBus中，其中有一个队列message，其中保存了很多函数，Execute时顺序执行这些函数。
+EBusBroadcastQueue执行所有异步事件，其中调用的m_queue.Execute()在[[Policies#EBusQueuePolicy]]中介绍过，就是顺序执行队列中的所有事件，它是线程安全的。
+
+EBusBroadcastQueue中的许多函数功能是相似的，比如QueueBroadcast是将一个事件按顺序异步执行，QueueBroadcastReverse是将一个事件按反序异步执行，所以这里只详细分析它们的其中一个版本。这些函数加入的事件会在EBusBroadcastQueue被调用时执行。
+所有的函数都依赖于核心函数QueueFunction，在注释中有解释，它的作用是将一个可调用的函数对象加入队列，在EBusBroadcastQueue执行它们，这个可调用的函数对象并不一定与当前EBus或者Handle关联，它可能是一个静态函数，lambda函数或者成员函数。
+```cpp
+        template <class Bus, class Traits>
+        template <class Function, class ... InputArgs>
+        inline void EBusBroadcastQueue<Bus, Traits>::QueueFunction(Function&& func, InputArgs&& ... args)
+        {
+            // 确认当前EBus支持Queue event功能
+            static_assert((AZStd::is_same<typename Bus::QueuePolicy::BusMessageCall, typename AZ::Internal::NullBusMessageCall>::value == false),
+                "This EBus doesn't support queued events! Check 'EnableEventQueue'");
+
+            auto& context = Bus::GetOrCreateContext(false);
+            if (context.m_queue.IsActive())
+            {
+                AZStd::scoped_lock<decltype(context.m_queue.m_messagesMutex)> messageLock(context.m_queue.m_messagesMutex);
+                // 这里将传入的func和args做了包装
+                context.m_queue.m_messages.push(typename Bus::QueuePolicy::BusMessageCall(
+                    [func = AZStd::forward<Function>(func), args...]() mutable
+                {
+                    AZStd::invoke(AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+                },
+                    typename Traits::AllocatorType()));
+            }
+            else
+            {
+                AZ_Warning("EBus", false, "Unable to queue function onto EBus.  This may be due to a previous call to AllowFunctionQueuing(false)."
+                    "  Hint: This is often disabled during shutdown of a ComponentApplication");
+            }
+        }
+```
+这个函数的核心是将一个lambda和一个分配器加入队列，lambda函数的类型是Bus::QueuePolicy::BusMessageCall，在[[Policies#EBusQueuePolicy]]有它的定义：
+```cpp
+typedef AZStd::function<void()> BusMessageCall;
+```
+就是一个不接受任何参数，也不返回任何值的函数，这里构造的lambda函数也是这个形式。然后lambda函数捕获了传入的func和args，并在其中调用它们（使用std::invoke）。经过这样的包装后，不论什么形式的函数都可以传进来。第二个参数是typename Traits::AllocatorType()，一个内存分配器，因为EBusQueuePolicy中的队列支持自定义内存分配器，这里使用的是EBus中的内存分配器。
+有了这个函数，就可以实现其他的加入队列的功能了，比如:
+### EBusBroadcastQueue
+```cpp
+        template <class Bus, class Traits>
+        template <class Function, class ... InputArgs>
+        inline void EBusBroadcastQueue<Bus, Traits>::QueueBroadcast(Function&& func, InputArgs&& ... args)
+        {
+            Internal::QueueFunctionArgumentValidator<Function, Traits::EnableQueuedReferences>::Validate();
+            using Broadcaster = void(*)(Function&&, InputArgs&&...);
+            Bus::QueueFunction(static_cast<Broadcaster>(&Bus::Broadcast), AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+        }
+```
+这个函数可以在EBus上广播Function事件，它第一步先验证参数，使用的是QueueFunctionArgumentValidator，看下它的实现。
+### QueueFunctionArgumentValidator
+```cpp
+            template <class Function, bool AllowQueuedReferences>
+            struct QueueFunctionArgumentValidator
+            {
+                static void Validate() {}
+            };
+
+            template <class Function>
+            struct ArgumentValidatorHelper
+            {
+                constexpr static void Validate()
+                {
+                    ValidateHelper(AZStd::make_index_sequence<AZStd::function_traits<Function>::num_args>());
+                }
+
+                template<typename T>
+                using is_non_const_lvalue_reference = AZStd::integral_constant<bool, AZStd::is_lvalue_reference<T>::value && !AZStd::is_const<AZStd::remove_reference_t<T>>::value>;
+
+                template <size_t... ArgIndices>
+                constexpr static void ValidateHelper(AZStd::index_sequence<ArgIndices...>)
+                {
+                    static_assert(!AZStd::disjunction_v<is_non_const_lvalue_reference<AZStd::function_traits_get_arg_t<Function, ArgIndices>>...>,
+                        "It is not safe to queue a function call with non-const lvalue ref arguments");
+                }
+            };
+
+            template <class Function>
+            struct QueueFunctionArgumentValidator<Function, false>
+            {
+                using Validator = ArgumentValidatorHelper<Function>;
+                constexpr static void Validate()
+                {
+                    Validator::Validate();
+                }
+            };
+```
+QueueFunctionArgumentValidator默认是没有实现的，只有一个空函数Validate。
+当QueueFunctionArgumentValidator指定第二个模板参数为false时，表示函数不允许传递引用作为参数，此时它才有实现。
+ValidateHelper用来验证这个函数的参数是否都为常量左值引用，如果不是则编译报错，其中使用了is_non_const_lvalue_reference来判断参数类型。
+这个结构体使用了大量的模板traits，它们的实现暂时不深入研究，现在确定的是这个QueueFunctionArgumentValidator功能，它用来验证一个函数传入的参数，如果将第二个模板参数AllowQueuedReferences设置为false，它会保证传入此函数的参数必须为常量左值引用（直接传值应该也能匹配？），否则编译就会出错。
+
+再回头看EBusBroadcastQueue的实现，使用QueueFunctionArgumentValidator完成验证后，后面就很简单了，代码片段：
+```cpp
+using Broadcaster = void(*)(Function&&, InputArgs&&...);
+Bus::QueueFunction(static_cast<Broadcaster>(&Bus::Broadcast), AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+```
+它调用QueueFunction并传入了三个参数，通过QueueFunction的定义可以知道，QueueFunction接收多个参数，并将第一个参数作为可调用的函数，后面的参数作为这个函数的参数。所以这里的第一个参数是Broadcaster，它也是一个接收多个参数的函数，并且没有返回值，它由Bus::Broadcast转换而来，Bus::Broadcast定义在[[Evnt Bus Internal#EBusContainer]]中，在Dispatcher里面，其格式与这里定义的Broadcaster相同。
+所以这里的调用逻辑是
+```cpp
+QueueFunction(Broadcaster, func, args...)
+//      |
+//      |
+//     \|/
+Broadcaster(func, args...)
+//      |
+//      |
+//     \|/
+std::invoke(func, args...)
+```
+这样就成功调用了func函数并传入args。
+### TryQueueBroadcast
+```cpp
+        template <class Bus, class Traits>
+        template <class Function, class ... InputArgs>
+        inline void EBusBroadcastQueue<Bus, Traits>::TryQueueBroadcast(Function&& func, InputArgs&& ... args)
+        {
+            if (EBusEventQueue<Bus, Traits>::IsFunctionQueuing())
+            {
+                EBusEventQueue<Bus, Traits>::QueueBroadcast(AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+            }
+        }
+```
+在QueueBroadcast外做了一次验证，保证此EBus开启了FunctionQueuing功能。
+### QueueBroadcastReverse
+```cpp
+        template <class Bus, class Traits>
+        template <class Function, class ... InputArgs>
+        inline void EBusBroadcastQueue<Bus, Traits>::QueueBroadcastReverse(Function&& func, InputArgs&& ... args)
+        {
+            Internal::QueueFunctionArgumentValidator<Function, Traits::EnableQueuedReferences>::Validate();
+            using Broadcaster = void(*)(Function&&, InputArgs&&...);
+            Bus::QueueFunction(static_cast<Broadcaster>(&Bus::BroadcastReverse), AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+        }
+```
+QueueBroadcast反序版本，将Bus::Broadcast换成了Bus::BroadcastReverse，它也是在[[Evnt Bus Internal#EBusContainer]]中定义的。
+# EBusEventQueue
+```cpp
+        /**
+         * Enqueues asynchronous events to dispatch to handlers that are connected to
+         * a specific address on an EBus.
+         * @tparam Bus       The EBus type.
+         * @tparam Traits    A class that inherits from EBusTraits and configures the EBus.
+         *                   This parameter may be left unspecified if the `Interface` class
+         *                   inherits from EBusTraits.
+         */
+        template <class Bus, class Traits>
+        struct EBusEventQueue
+            : public EBusBroadcastQueue<Bus, Traits>
+        {
+
+            /**
+             * The type of ID that is used to address the EBus.
+             * Used only when the address policy is AZ::EBusAddressPolicy::ById
+             * or AZ::EBusAddressPolicy::ByIdAndOrdered.
+             * The type must support `AZStd::hash<ID>` and
+             * `bool operator==(const ID&, const ID&)`.
+             */
+            using BusIdType = typename Traits::BusIdType;
+
+            /**
+             * Pointer to an address on the bus.
+             */
+            using BusPtr = typename Traits::BusPtr;
+
+            /**
+             * Helper to queue an event by BusIdType only when function queueing is enabled
+             * @param id            Address ID. Handlers that are connected to this ID will receive the event.
+             * @param func          Function pointer of the event to dispatch.
+             * @param args          Function arguments that are passed to each handler.
+             */
+            template <class Function, class ... InputArgs>
+            static void TryQueueEvent(const BusIdType& id, Function&& func, InputArgs&& ... args);
+
+            /**
+             * Enqueues an asynchronous event to dispatch to handlers at a specific address.
+             * The event is not executed until ExecuteQueuedEvents() is called.
+             * @param id            Address ID. Handlers that are connected to this ID will receive the event.
+             * @param func          Function pointer of the event to dispatch.
+             * @param args          Function arguments that are passed to each handler.
+             */
+            template <class Function, class ... InputArgs>
+            static void QueueEvent(const BusIdType& id, Function&& func, InputArgs&& ... args);
+
+            /**
+             * Helper to queue an event by BusPtr only when function queueing is enabled
+             * @param ptr           Cached address ID. Handlers that are connected to this ID will receive the event.
+             * @param func          Function pointer of the event to dispatch.
+             * @param args          Function arguments that are passed to each handler.
+             */
+            template <class Function, class ... InputArgs>
+            static void TryQueueEvent(const BusPtr& ptr, Function&& func, InputArgs&& ... args);
+
+            /**
+             * Enqueues an asynchronous event to dispatch to handlers at a cached address.
+             * The event is not executed until ExecuteQueuedEvents() is called.
+             * @param ptr           Cached address ID. Handlers that are connected to this ID will receive the event.
+             * @param func          Function pointer of the event to dispatch.
+             * @param args          Function arguments that are passed to each handler.
+             */
+            template <class Function, class ... InputArgs>
+            static void QueueEvent(const BusPtr& ptr, Function&& func, InputArgs&& ... args);
+
+            ...
+};
+```
+继承了[[#EBusBroadcastQueue]]的特殊版本，之前是广播，这里是将事件发送给指定id上的Handler，通过指定BusId或BusPtr进行定位r，其中提供的函数与EBusBroadcastQueue相似，这里就看一下QueueEvent的实现。
+```cpp
+        template <class Bus, class Traits>
+        template <class Function, class ... InputArgs>
+        inline void EBusEventQueue<Bus, Traits>::QueueEvent(const BusIdType& id, Function&& func, InputArgs&& ... args)
+        {
+            Internal::QueueFunctionArgumentValidator<Function, Traits::EnableQueuedReferences>::Validate();
+            using Eventer = void(*)(const BusIdType&, Function&&, InputArgs&&...);
+            Bus::QueueFunction(static_cast<Eventer>(&Bus::Event), id, AZStd::forward<Function>(func), AZStd::forward<InputArgs>(args)...);
+        }
+```
+和EBusBroadcastQueue几乎是一样的，区别就是传递了Bus::Event，它在[[Evnt Bus Internal#EBusContainer]]中定义，需要一个参数id或BusPtr来指定可以接收到事件的Handler。
+# EBusBroadcastEnumerator
+```cpp
+        /**
+         * Provides functionality that requires enumerating over all handlers that are
+         * connected to an EBus.
+         * To enumerate over handlers that are connected to a specific address
+         * on the EBus, use a function from EBusEventEnumerator.
+         * @tparam Bus       The EBus type.
+         * @tparam Traits    A class that inherits from EBusTraits and configures the EBus.
+         *                   This parameter may be left unspecified if the `Interface` class
+         *                   inherits from EBusTraits.
+         */
+        template <class Bus, class Traits>
+        struct EBusBroadcastEnumerator
+        {
+            /**
+             * Finds the first handler that is connected to the EBus.
+             * This function is only for special cases where you know that a particular
+             * component's handler is guaranteed to exist.
+             * Even if the returned pointer is valid (not null), it might point to a handler
+             * that was deleted. Prefer dispatching events using EBusEventer.
+             * @return          A pointer to the first handler on the EBus, even if the handler
+             *                  was deleted.
+             */
+            static typename Traits::InterfaceType* FindFirstHandler();
+        };
+```
+与[[#EBusEventEnumerator]]对应的广播版本，其中只有一个函数FindFirstHandler，用来寻找第一个连接到此EBus的Handler。
+```cpp
+        template <class Bus, class Traits>
+        typename Traits::InterfaceType * EBusBroadcastEnumerator<Bus, Traits>::FindFirstHandler()
+        {
+            typename Traits::InterfaceType* result = nullptr;
+            Bus::EnumerateHandlers([&result](typename Traits::InterfaceType* handler)
+            {
+                result = handler;
+                return false;
+            });
+            return result;
+        }
+```
+同样使用EnumerateHandlers执行一个lambda来寻找handler，实现方式与EBusEventEnumerator的相同。
+# EventDispatcher
+```cpp
+        // This alias is required because you're not allowed to inherit from a nested type.
+        template <typename Bus, typename Traits>
+        using EventDispatcher = typename Traits::BusesContainer::template Dispatcher<Bus>;
+```
+使用的就是[[Evnt Bus Internal#EBusContainer]]中的Dispatcher，其中有Event和Broadcast等函数，实现了EBus的事件分发功能。
+# EBusImpl
+上面介绍了许多结构体，真正的EBusImpl就是通过组合这些结构体的功能来实现的。
+```cpp
+        /**
+         * Base class that provides eventing, queueing, and enumeration functionality
+         * for EBuses that dispatch events to handlers. Supports accessing handlers
+         * that are connected to specific addresses.
+         * @tparam Bus       The EBus type.
+         * @tparam Traits    A class that inherits from EBusTraits and configures the EBus.
+         *                   This parameter may be left unspecified if the `Interface` class
+         *                   inherits from EBusTraits.
+         * @tparam BusIdType The type of ID that is used to address the EBus.
+         */
+        template <class Bus, class Traits, class BusIdType>
+        struct EBusImpl
+            : public EventDispatcher<Bus, Traits>
+            , public EBusBroadcaster<Bus, Traits>
+            , public EBusEventer<Bus, Traits>
+            , public EBusEventEnumerator<Bus, Traits>
+            , public AZStd::conditional_t<Traits::EnableEventQueue, EBusEventQueue<Bus, Traits>, EBusNullQueue>
+        {
+        };
+```
+基础的EBusImpl，结合了EventDispatcher，EBusBroadcaster，EBusEventer，EBusEventEnumerator功能，再根据Traits::EnableEventQueue是否为true选择继承EBusEventQueue或EBusNullQueue。
+这里继承了EventDispatcher，所以上面才可以以Bus::Broadcast的形式调用EventDispatcher（EBusContainer中的Dispatcher）的Broadcast函数。
+EBusImpl还有一个特化版本：
+```cpp
+        /**
+         * Base class that provides eventing, queueing, and enumeration functionality
+         * for EBuses that dispatch events to all of their handlers.
+         * For a base class that can access handlers at specific addresses, use EBusImpl.
+         * @tparam Bus       The EBus type.
+         * @tparam Traits    A class that inherits from EBusTraits and configures the EBus.
+         *                   This parameter may be left unspecified if the `Interface` class
+         *                   inherits from EBusTraits.
+         */
+        template <class Bus, class Traits>
+        struct EBusImpl<Bus, Traits, NullBusId>
+            : public EventDispatcher<Bus, Traits>
+            , public EBusBroadcaster<Bus, Traits>
+            , public EBusBroadcastEnumerator<Bus, Traits>
+            , public AZStd::conditional_t<Traits::EnableEventQueue, EBusBroadcastQueue<Bus, Traits>, EBusNullQueue>
+        {
+            using EBusBroadcastEnumerator<Bus, Traits>::FindFirstHandler;
+
+            static typename Traits::InterfaceType* FindFirstHandler(const NullBusId&)
+            {
+                // Invoke the EBusBroadcastEnumerator FindFirstHandler function
+                // Since this EBus doesn't use a BusId, the argument isn't needed
+                return FindFirstHandler();
+            }
+
+            static typename Traits::InterfaceType* FindFirstHandler(const typename Traits::BusPtr&)
+            {
+                // Invoke the EBusBroadcastEnumerator FindFirstHandler function
+                // Since this EBus doesn't use a BusId, the argument isn't needed
+                return FindFirstHandler();
+            }
+        };
+```
+用来实现无Address的EBus版本，它的第三个模板参数为NullBusId。
+同时，这里定义了新的FindFirstHandler，由于是没有Address的EBus，所以显式指定FindFirstHandler使用EBusBroadcastEnumerator中的函数，从代码中也可以看出，传入的参数NullBusId和Traits::BusPtr是没有使用的。
+# 总结
+EBusImpl是EBus的核心实现部分，它包含以下部件
+- EBusEventer和EBusBroadcaster，用于分发事件，但是没有具体实现，推测是后续的更新方向。
+- EBusEventEnumerator和EBusBroadcastEnumerator，用户枚举EBus上的Handler，目前的用法只有寻找EBus上的第一个Handler和统计Handler的数量。
+- EBusNullQueue，EBusBroadcastQueue和EBusEventQueue，用于将一个事件（函数）加入到执行队列中，后面可以在合适的时机顺序执行。这样EBus有了异步执行的功能。
+- EventDispatcher，是BusContainer的Dispatcher的别名，其中实现了EBus最重要的Broadcast和Event函数，推测是一个需要废弃的部件，它的功能应该移动到EBusEventer和EBusBroadcaster中。（也有可能是发现Broadcast和Event函数离开BusContainer实现不了？）
+
+

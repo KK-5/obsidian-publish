@@ -510,4 +510,4 @@ EBusEventProcessingPolicy具体的实现如下：
 ```
 有CallResult和Call两个版本，其中都是使用std::invoke来实现的（C++17加入的新特性）。
 # 总结
-按照程序数据与行为分离的实现思想，EBusContainer保存了EBus所使用的数据，而Policy模块则提供了EBus各种行为的实现，包括EBus本身Address和Handler的控制，Router功能和EventProcessing调用可执行函数，
+按照程序数据与行为分离的实现思想，EBusContainer保存了EBus所使用的数据，而Policy模块则提供了EBus各种行为的实现，包括EBus本身Address和Handler的控制，Router功能和EventProcessing调用可执行函数。并且EBus可以根据不同的场景使用Policy选择不同的实现方案，比如使用StoragePolicy控制EBus的数据是保存在全局变量中还是当前线程中。

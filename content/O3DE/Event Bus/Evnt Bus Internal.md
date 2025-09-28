@@ -1,14 +1,3 @@
-Ebus是O3DE引擎中的消息传递系统，更加详细的信息可以参考官方文档：[EBus](https://www.docs.o3de.org/docs/user-guide/programming/messaging/)
-这里详细研究它的实现机制。
-
-EBus使用模板编程，主要用来分发事件或者接收请求。
-EBus代码架构：
-...
-# EBus中的一些概念
-Interface：一个抽象类，其中定义了EBus需要分发或者接收的虚函数。
-Traits：用来定义EBus的属性，一般来说如果Interface继承了EBusTraits，它就不用提供了。
-Handler：连接到EBus的实例，EBus分发事件或接收请求时，会触发它们的回调函数，它继承自Interface的类。
-Address：用来确定事件或请求需要分发到哪些Handle，如果使用的话，一般以ID来指定，默认不使用，也就是事件通知到所有连接到此EBus的Handler。
 # Internal
 Internal中包含了EBus的底层基础组件。
 ## StoragePolicies
@@ -535,7 +524,7 @@ CallstackEntry是CallstackEntryBase的子类，它专用于单线程，其中保
 CallstackEntry的初始化需要Ebus的context，当一个CallstackEntry对象创建时，它将自己插入到context中的s_callstack链表，并且保证这个链表上的CallstackEntry都在同一线程中。context的m_dispatches记录了s_callstack链表的节点数量。
 从上面的设计中也可以看出，s_callstack就像一个栈一样，插入节点只能从头部插入，删除节点也只能从头部删除，这可能也是将它称为stack的原因。
 ### CallstackEntryRoot
-CallstackEntryRoot同样是CallstackEntryBase的子类，但它与CallstackEntry不同，故名思意，CallstackEntryRoot作为CallstackEntry的根节点，因为在多线程的情况下，每个线程都有一条CallstackEntry链表，每个链表的头节点都是一个CallstackEntryRoot。
+CallstackEntryRoot同样是CallstackEntryBase的子类，但它与CallstackEntry不同，顾名思义，CallstackEntryRoot作为CallstackEntry的根节点，因为在多线程的情况下，每个线程都有一条CallstackEntry链表，每个链表的头节点都是一个CallstackEntryRoot。
 由于CallstackEntryRoot是作为一种“哨兵”节点存在的，所以它不应该被像CallstackEntryBase一样使用。
 ```cpp
         template <typename Interface, typename Traits>
@@ -873,7 +862,7 @@ MakeDisconnectFixer的定义如下：
 MidDispatchDisconnectFixer类的构造需要四个参数，
 context：EBus的context。
 busId：EBus的address（如果有的话）。
-pre：类型是PreRemoveHandler，是一个回掉函数。
+pre：类型是PreRemoveHandler，是一个回调函数。
 post：类型是PostRemoveHandler，也是一个回调函数。
 从上面对[[Evnt Bus Internal#CallstackEntry]]的分析中可以知道，所有的CallstackEntry都是插入到context的s_callstack中的对象，它们包含了一些函数，Ebus可能在适当时时候调用这些函数，比如这里实现的OnRemoveHandler和OnPostRemoveHandler函数，EBus会在一个handler断开时和断开后调用它们。
 那么MidDispatchDisconnectFixer的设计含义就很明显了，它是一个CallstackEntry，拥有
