@@ -275,7 +275,7 @@ void ShaderGraph::finalize(Scene *scene, bool do_bump, bool bump_in_object_space
   }
 }
 ```
-这个函数的描述中说明，每个Shader Graph的finalize只能由一次，并且finalize后就不能再修改这个Shader Graph了，忽略bump map的部分，finalize会自动先执行一次simplify来简化Shader Graph，然后执行transform_multi_closure，这里将transform_multi_closure分成了Surface和Volume两种情况，由于大多数情况下都是使用Surface渲染，这里就只考虑Surface的情况。
+这个函数的描述中说明，每个Shader Graph的finalize只能有一次，并且finalize后就不能再修改这个Shader Graph了，忽略bump map的部分，finalize会自动先执行一次simplify来简化Shader Graph，然后执行transform_multi_closure，这里将transform_multi_closure分成了Surface和Volume两种情况，由于大多数情况下都是使用Surface渲染，这里就只考虑Surface的情况。
 
 transform_multi_closure函数源码片段：
 ```
@@ -574,7 +574,7 @@ int SVMCompiler::stack_assign(ShaderInput *input)
       }
 ```
 首先调用stack_find_offset在stack中找到该ShaderInput类型的offset，然后根据该ShaderInput类型生成对应的SVM Node，add_node函数用于向compile结果中添加新的SVM Node，比如add_node(NODE_VALUE_F, value1, value2）就是添加了一个NODE_VALUE_F节点，并且它关联的数据是value1和value2，它的实现在后续说明。
-这说明假设节点的某一个输入没有连接到其他节点的输出，而是直接输入了一个数时，SVM会为它自动生成Value节点，如果时float数据，就生成一个NODE_VALUE_F，如果时Vector（或Color）数据，就生成两个NODE_VALUE_V。
+这说明假设节点的某一个输入没有连接到其他节点的输出，而是直接输入了一个数时，SVM会为它自动生成Value节点，如果是float数据，就生成一个NODE_VALUE_F，如果时Vector（或Color）数据，就生成两个NODE_VALUE_V。
 这种方式保证了Shader Graph编译后的第一个SVM Node一定是NODE_VALUE_XX类型的节点。
 
 
@@ -884,8 +884,7 @@ void SVMCompiler::generate_closure_node(ShaderNode *node, CompilerState *state)
 {  
   ...
   /* closure mix weight */
-  const char *weight_name = (current_type == SHADER_TYPE_VOLUME) ? "VolumeMixWeight" :
-                                                                   "SurfaceMixWeight";
+  const char *weight_name = (current_type == SHADER_TYPE_VOLUME) ? "VolumeMixWeight" : "SurfaceMixWeight";
   ShaderInput *weight_in = node->input(weight_name);
 
   if (weight_in && (weight_in->link || node->get_float(weight_in->socket_type) != 1.0f)) {
